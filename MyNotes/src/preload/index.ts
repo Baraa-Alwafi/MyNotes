@@ -3,7 +3,17 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
-  fetchCalendar: (url: string): Promise<string> => ipcRenderer.invoke('calendar:fetch', url)
+  fetchCalendar: (url: string): Promise<string> => ipcRenderer.invoke('calendar:fetch', url),
+  syncTaskReminders: (
+    tasks: {
+      id: string
+      title: string
+      due: string
+      dueTime?: string
+      reminder?: '15m' | '1h' | '1d' | '1w' | null
+      done: boolean
+    }[]
+  ): void => ipcRenderer.send('reminders:sync', tasks)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

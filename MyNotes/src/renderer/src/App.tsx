@@ -1,13 +1,39 @@
 import { useEffect, useMemo, useState } from 'react'
 
 type View = 'today' | 'upcoming' | 'all' | 'calendar' | 'notes'
+type ReminderOffset = '15m' | '1h' | '1d' | '1w'
 type Task = {
   id: string
   title: string
+  description?: string
   due: string
+  dueTime?: string
+  reminder?: ReminderOffset | null
   category: string
   priority: 'High' | 'Medium' | 'Low'
   done: boolean
+}
+type DashboardTask = {
+  id: string
+  title: string
+  description: string
+  due: string
+  dueTime?: string
+  reminder?: ReminderOffset | null
+  tag: string
+  priority: Task['priority']
+  done: boolean
+  isCalendarEvent: boolean
+}
+type CalendarTaskDetails = {
+  done?: boolean
+  title?: string
+  description?: string
+  due?: string
+  dueTime?: string | null
+  reminder?: ReminderOffset | null
+  category?: string
+  priority?: Task['priority']
 }
 type Note = {
   id: string
@@ -38,6 +64,7 @@ type CalendarEvent = {
 const taskStorageKey = 'daymark.tasks'
 const noteStorageKey = 'daymark.notes'
 const calendarStorageKey = 'daymark.calendar'
+const calendarTaskDetailsStorageKey = 'daymark.calendar-task-details'
 const calendarUrlStorageKey = 'daymark.calendar-url'
 const colors = ['#efd395', '#a4a4a4', '#777674', '#4b4a48', '#262625', '#131313']
 const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -56,6 +83,13 @@ function dateKey(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function formatTaskTime(value: string): string {
+  const [hours, minutes] = value.split(':').map(Number)
+  const time = new Date()
+  time.setHours(hours, minutes, 0, 0)
+  return new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(time)
 }
 
 function addDays(date: Date, count: number): Date {
@@ -285,6 +319,7 @@ function Icon({
     | 'plus'
     | 'check'
     | 'trash'
+    | 'edit'
     | 'back'
     | 'spark'
   size?: number
@@ -334,6 +369,11 @@ function Icon({
       <>
         <path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6" />
         <path d="M10 11v5m4-5v5" />
+      </>
+    ),
+    edit: (
+      <>
+        <path d="m15 5 4 4M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
       </>
     ),
     back: <path d="m15 18-6-6 6-6" />,
@@ -424,13 +464,24 @@ function App(): React.JSX.Element {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() =>
     readStorage(calendarStorageKey, [])
   )
+  const [calendarTaskDetails, setCalendarTaskDetails] = useState<
+    Record<string, CalendarTaskDetails>
+  >(() => readStorage(calendarTaskDetailsStorageKey, {}))
   const [calendarUrl, setCalendarUrl] = useState(readCalendarUrl)
   const [calendarUrlInput, setCalendarUrlInput] = useState(readCalendarUrl)
   const [calendarRefresh, setCalendarRefresh] = useState(0)
   const [query, setQuery] = useState('')
   const [addingTask, setAddingTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskDescription, setNewTaskDescription] = useState('')
   const [newTaskDue, setNewTaskDue] = useState(today)
+  const [newTaskDueTime, setNewTaskDueTime] = useState('')
+  const [newTaskReminder, setNewTaskReminder] = useState<ReminderOffset | ''>('')
+  const [newTaskPriority, setNewTaskPriority] = useState<Task['priority']>('Medium')
+  const [newTaskTag, setNewTaskTag] = useState('Personal')
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [editingCalendarTaskId, setEditingCalendarTaskId] = useState<string | null>(null)
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState(today)
   const [calendarMonth, setCalendarMonth] = useState(
@@ -461,6 +512,14 @@ function App(): React.JSX.Element {
       console.error('Unable to save calendar events to local storage', error)
     }
   }, [calendarEvents])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(calendarTaskDetailsStorageKey, JSON.stringify(calendarTaskDetails))
+    } catch (error) {
+      console.error('Unable to save UQU task details to local storage', error)
+    }
+  }, [calendarTaskDetails])
 
   useEffect(() => {
     if (!calendarUrl) return
@@ -505,17 +564,93 @@ function App(): React.JSX.Element {
 
   const completedCount = tasks.filter((task) => task.done).length
   const openCount = tasks.filter((task) => !task.done).length
+  const existingTags = useMemo(() => {
+    const tagByName = new Map<string, string>()
+    tasks.forEach((task) => {
+      const tag = task.category.trim()
+      if (tag) tagByName.set(tag.toLowerCase(), tag)
+    })
+    Object.values(calendarTaskDetails).forEach((details) => {
+      const tag = details.category?.trim()
+      if (tag) tagByName.set(tag.toLowerCase(), tag)
+    })
+    if (calendarEvents.length) tagByName.set('uqu', 'UQU')
+    return [...tagByName.values()].sort((a, b) => a.localeCompare(b))
+  }, [calendarEvents.length, calendarTaskDetails, tasks])
+  const calendarTasks = useMemo(
+    () =>
+      calendarEvents.flatMap((calendarEvent): DashboardTask[] => {
+        const dates = calendarEvent.recurrence
+          ? Array.from({ length: 366 }, (_, index) =>
+              dateKey(addDays(new Date(`${today}T12:00:00`), index))
+            ).filter((date) => isEventOnDate(calendarEvent, date))
+          : calendarEvent.startDate >= today
+            ? [calendarEvent.startDate]
+            : []
+        return dates.map((date) => {
+          const id = `calendar:${calendarEvent.id}:${date}`
+          const details = calendarTaskDetails[id]
+          return {
+            id,
+            title: details?.title ?? calendarEvent.title,
+            description: details?.description ?? calendarEvent.description,
+            due: details?.due ?? date,
+            dueTime:
+              details?.dueTime === null
+                ? undefined
+                : (details?.dueTime ?? calendarEvent.startTime ?? undefined),
+            reminder: details?.reminder ?? null,
+            tag: details?.category?.trim() || 'UQU',
+            priority: details?.priority ?? 'Medium',
+            done: details?.done ?? false,
+            isCalendarEvent: true
+          }
+        })
+      }),
+    [calendarEvents, calendarTaskDetails, today]
+  )
   const visibleTasks = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    return tasks
+    const taskItems: DashboardTask[] = tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      description: task.description ?? '',
+      due: task.due,
+      dueTime: task.dueTime,
+      reminder: task.reminder,
+      tag: task.category,
+      priority: task.priority,
+      done: task.done,
+      isCalendarEvent: false
+    }))
+
+    return [...taskItems, ...calendarTasks]
       .filter((task) => {
-        if (view === 'today' && task.due > today) return false
+        if (view === 'today' && task.isCalendarEvent && task.due !== today) return false
+        if (view === 'today' && !task.isCalendarEvent && task.due > today) return false
         if (view === 'upcoming' && task.due <= today) return false
+        if (tagFilter && task.tag.toLowerCase() !== tagFilter.toLowerCase()) return false
         if (!normalizedQuery) return true
-        return `${task.title} ${task.category}`.toLowerCase().includes(normalizedQuery)
+        return `${task.title} ${task.description} ${task.tag}`
+          .toLowerCase()
+          .includes(normalizedQuery)
       })
       .sort((a, b) => Number(a.done) - Number(b.done) || a.due.localeCompare(b.due))
-  }, [query, tasks, today, view])
+  }, [calendarTasks, query, tagFilter, tasks, today, view])
+
+  useEffect(() => {
+    if (typeof window.api?.syncTaskReminders !== 'function') return
+    window.api.syncTaskReminders(
+      [...tasks, ...calendarTasks].map(({ id, title, due, dueTime, reminder, done }) => ({
+        id,
+        title,
+        due,
+        dueTime,
+        reminder,
+        done
+      }))
+    )
+  }, [calendarTasks, tasks])
 
   const normalizedNoteQuery = query.trim().toLowerCase()
   const visibleNotes = notes.filter((note) =>
@@ -565,23 +700,108 @@ function App(): React.JSX.Element {
     day: 'numeric'
   }).format(new Date())
 
+  function openTaskDialog(dueDate = today): void {
+    setEditingTaskId(null)
+    setEditingCalendarTaskId(null)
+    setNewTaskTitle('')
+    setNewTaskDescription('')
+    setNewTaskDue(dueDate)
+    setNewTaskDueTime('')
+    setNewTaskReminder('')
+    setNewTaskPriority('Medium')
+    setNewTaskTag('Personal')
+    setAddingTask(true)
+  }
+
+  function editTask(taskId: string): void {
+    const task = tasks.find((item) => item.id === taskId)
+    if (!task) return
+
+    setEditingCalendarTaskId(null)
+    setEditingTaskId(task.id)
+    setNewTaskTitle(task.title)
+    setNewTaskDescription(task.description ?? '')
+    setNewTaskDue(task.due)
+    setNewTaskDueTime(task.dueTime ?? '')
+    setNewTaskReminder(task.reminder ?? '')
+    setNewTaskPriority(task.priority)
+    setNewTaskTag(task.category)
+    setAddingTask(true)
+  }
+
+  function editCalendarTask(task: DashboardTask): void {
+    setEditingTaskId(null)
+    setEditingCalendarTaskId(task.id)
+    setNewTaskTitle(task.title)
+    setNewTaskDescription(task.description)
+    setNewTaskDue(task.due)
+    setNewTaskDueTime(task.dueTime ?? '')
+    setNewTaskReminder(task.reminder ?? '')
+    setNewTaskPriority(task.priority)
+    setNewTaskTag(task.tag)
+    setAddingTask(true)
+  }
+
+  function closeTaskDialog(): void {
+    setAddingTask(false)
+    setEditingTaskId(null)
+    setEditingCalendarTaskId(null)
+  }
+
   function addTask(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault()
     const title = newTaskTitle.trim()
     if (!title) return
-    setTasks((current) => [
-      {
-        id: crypto.randomUUID(),
+    const updatedTask = {
+      title,
+      description: newTaskDescription.trim(),
+      due: newTaskDue,
+      dueTime: newTaskDueTime || undefined,
+      reminder: newTaskReminder || null,
+      category: newTaskTag.trim() || 'Personal',
+      priority: newTaskPriority
+    }
+
+    if (editingTaskId) {
+      setTasks((current) =>
+        current.map((task) => (task.id === editingTaskId ? { ...task, ...updatedTask } : task))
+      )
+    } else if (editingCalendarTaskId) {
+      updateCalendarTask(editingCalendarTaskId, {
         title,
-        due: newTaskDue,
-        category: 'Personal',
-        priority: 'Medium',
-        done: false
-      },
-      ...current
-    ])
+        description: updatedTask.description,
+        due: updatedTask.due,
+        dueTime: updatedTask.dueTime ?? null,
+        reminder: updatedTask.reminder,
+        category: updatedTask.category,
+        priority: updatedTask.priority
+      })
+    } else {
+      setTasks((current) => [
+        {
+          id: crypto.randomUUID(),
+          ...updatedTask,
+          done: false
+        },
+        ...current
+      ])
+    }
     setNewTaskTitle('')
+    setNewTaskDescription('')
+    setEditingTaskId(null)
+    setEditingCalendarTaskId(null)
     setAddingTask(false)
+  }
+
+  function updateCalendarTask(id: string, update: Partial<CalendarTaskDetails>): void {
+    setCalendarTaskDetails((current) => ({
+      ...current,
+      [id]: { ...current[id], ...update }
+    }))
+  }
+
+  function updateTaskDescription(id: string, description: string): void {
+    setTasks((current) => current.map((task) => (task.id === id ? { ...task, description } : task)))
   }
 
   function syncCalendarLink(event: React.FormEvent<HTMLFormElement>): void {
@@ -948,38 +1168,12 @@ function App(): React.JSX.Element {
                           </div>
                           <button
                             className="day-add-button"
-                            onClick={() => {
-                              setNewTaskDue(selectedDate)
-                              setAddingTask(true)
-                            }}
+                            onClick={() => openTaskDialog(selectedDate)}
                             type="button"
                           >
                             <Icon name="plus" size={15} /> Task
                           </button>
                         </div>
-
-                        {addingTask && (
-                          <form className="calendar-add-task" onSubmit={addTask}>
-                            <input
-                              autoFocus
-                              aria-label="New task title"
-                              placeholder="What needs doing?"
-                              value={newTaskTitle}
-                              onChange={(event) => setNewTaskTitle(event.target.value)}
-                            />
-                            <button className="save-task-button" type="submit">
-                              Add
-                            </button>
-                            <button
-                              aria-label="Cancel adding task"
-                              className="cancel-task-button"
-                              onClick={() => setAddingTask(false)}
-                              type="button"
-                            >
-                              Cancel
-                            </button>
-                          </form>
-                        )}
 
                         <div className="selected-day-items">
                           {selectedDayItems.events.map((item) => (
@@ -1181,7 +1375,7 @@ function App(): React.JSX.Element {
                       : 'Everything you need to get across the finish line.'}
                 </p>
               </div>
-              <button className="primary-button" onClick={() => setAddingTask(true)} type="button">
+              <button className="primary-button" onClick={() => openTaskDialog()} type="button">
                 <Icon name="plus" size={17} /> Add a task
               </button>
             </section>
@@ -1233,41 +1427,38 @@ function App(): React.JSX.Element {
                   </h2>
                   <p>{visibleTasks.filter((task) => !task.done).length} left to do</p>
                 </div>
-                <div className="task-filter">
-                  <span className="filter-dot" />
-                  {view === 'today' ? 'Today' : view === 'upcoming' ? 'Upcoming' : 'All tasks'}
+                <div className="task-section-filters">
+                  {view === 'all' ? (
+                    <label className="task-tag-filter-select">
+                      <span>Filter tag</span>
+                      <select
+                        aria-label="Filter tasks by tag"
+                        value={tagFilter ?? ''}
+                        onChange={(event) => setTagFilter(event.target.value || null)}
+                      >
+                        <option value="">All tags</option>
+                        {existingTags.map((tag) => (
+                          <option key={tag.toLowerCase()} value={tag}>
+                            {tag}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : tagFilter ? (
+                    <button
+                      className="task-tag-filter-clear"
+                      onClick={() => setTagFilter(null)}
+                      type="button"
+                    >
+                      {tagFilter} <span aria-hidden="true">×</span>
+                    </button>
+                  ) : null}
+                  <div className="task-filter">
+                    <span className="filter-dot" />
+                    {view === 'today' ? 'Today' : view === 'upcoming' ? 'Upcoming' : 'All tasks'}
+                  </div>
                 </div>
               </div>
-
-              {addingTask && (
-                <form className="add-task-form" onSubmit={addTask}>
-                  <span className="unchecked-circle" />
-                  <input
-                    autoFocus
-                    aria-label="Task name"
-                    placeholder="What needs to get done?"
-                    value={newTaskTitle}
-                    onChange={(event) => setNewTaskTitle(event.target.value)}
-                  />
-                  <input
-                    aria-label="Task due date"
-                    className="date-input"
-                    type="date"
-                    value={newTaskDue}
-                    onChange={(event) => setNewTaskDue(event.target.value)}
-                  />
-                  <button className="save-task-button" type="submit">
-                    Add
-                  </button>
-                  <button
-                    className="cancel-task-button"
-                    onClick={() => setAddingTask(false)}
-                    type="button"
-                  >
-                    Cancel
-                  </button>
-                </form>
-              )}
 
               <div className="task-list">
                 {visibleTasks.length === 0 ? (
@@ -1275,25 +1466,41 @@ function App(): React.JSX.Element {
                     <span className="task-empty-check">
                       <Icon name="check" size={18} />
                     </span>
-                    <strong>{query ? 'No matching tasks' : 'Nothing on your list'}</strong>
+                    <strong>
+                      {tagFilter
+                        ? `No tasks tagged ${tagFilter}`
+                        : query
+                          ? 'No matching tasks'
+                          : 'Nothing on your list'}
+                    </strong>
                     <span>
-                      {query ? 'Try another search.' : 'Take a breath, or add something new.'}
+                      {tagFilter
+                        ? 'Clear the tag filter or choose another tag.'
+                        : query
+                          ? 'Try another search.'
+                          : 'Take a breath, or add something new.'}
                     </span>
                   </div>
                 ) : (
                   visibleTasks.map((task) => (
-                    <div className={`task-row ${task.done ? 'is-done' : ''}`} key={task.id}>
+                    <div
+                      className={`task-row ${task.done ? 'is-done' : ''} ${task.isCalendarEvent ? 'calendar-task-row' : ''}`}
+                      data-priority={task.priority?.toLowerCase()}
+                      key={task.id}
+                    >
                       <button
                         aria-label={
                           task.done ? `Mark ${task.title} as not done` : `Complete ${task.title}`
                         }
                         className={`task-check ${task.done ? 'checked' : ''}`}
                         onClick={() =>
-                          setTasks((current) =>
-                            current.map((item) =>
-                              item.id === task.id ? { ...item, done: !item.done } : item
-                            )
-                          )
+                          task.isCalendarEvent
+                            ? updateCalendarTask(task.id, { done: !task.done })
+                            : setTasks((current) =>
+                                current.map((item) =>
+                                  item.id === task.id ? { ...item, done: !item.done } : item
+                                )
+                              )
                         }
                         type="button"
                       >
@@ -1302,46 +1509,114 @@ function App(): React.JSX.Element {
                       <div className="task-main">
                         <span className="task-title">{task.title}</span>
                         <span className="task-meta">
-                          <span className={`priority-dot ${task.priority.toLowerCase()}`} />
-                          {task.category}
+                          {task.priority && (
+                            <span className={`priority-dot ${task.priority.toLowerCase()}`} />
+                          )}
+                          <button
+                            className={`task-tag ${tagFilter === task.tag ? 'selected' : ''}`}
+                            onClick={() =>
+                              setTagFilter((current) => (current === task.tag ? null : task.tag))
+                            }
+                            type="button"
+                          >
+                            {task.tag}
+                          </button>
+                          {task.priority && (
+                            <span
+                              className={`priority-label priority-${task.priority.toLowerCase()}`}
+                            >
+                              {task.priority}
+                            </span>
+                          )}
+                          {task.isCalendarEvent && <span>Calendar event</span>}
                         </span>
+                        {task.description && (
+                          <span className="task-description">{task.description}</span>
+                        )}
+                        {task.isCalendarEvent ? (
+                          <details className="calendar-task-description-editor">
+                            <summary>
+                              {task.description ? 'Edit description' : 'Add description'}
+                            </summary>
+                            <textarea
+                              aria-label={`Description for ${task.title}`}
+                              maxLength={2000}
+                              onChange={(event) =>
+                                updateCalendarTask(task.id, { description: event.target.value })
+                              }
+                              placeholder="Add a description for this UQU event"
+                              value={task.description}
+                            />
+                          </details>
+                        ) : (
+                          <details className="calendar-task-description-editor">
+                            <summary>
+                              {task.description ? 'Edit description' : 'Add description'}
+                            </summary>
+                            <textarea
+                              aria-label={`Description for ${task.title}`}
+                              maxLength={2000}
+                              onChange={(event) =>
+                                updateTaskDescription(task.id, event.target.value)
+                              }
+                              placeholder="Add a description for this task"
+                              value={task.description}
+                            />
+                          </details>
+                        )}
                       </div>
                       <span className="task-due">
-                        {task.due === today
-                          ? 'Today'
-                          : task.due === tomorrow
-                            ? 'Tomorrow'
-                            : new Intl.DateTimeFormat('en', {
-                                month: 'short',
-                                day: 'numeric'
-                              }).format(new Date(`${task.due}T12:00:00`))}
+                        <span>
+                          {view === 'upcoming'
+                            ? (() => {
+                                const daysLeft = dateDifference(today, task.due)
+                                return `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+                              })()
+                            : task.due === today
+                              ? 'Today'
+                              : task.due === tomorrow
+                                ? 'Tomorrow'
+                                : new Intl.DateTimeFormat('en', {
+                                    month: 'short',
+                                    day: 'numeric'
+                                  }).format(new Date(`${task.due}T12:00:00`))}
+                        </span>
+                        {task.dueTime && <small>{formatTaskTime(task.dueTime)}</small>}
                       </span>
-                      <button
-                        aria-label={`Delete ${task.title}`}
-                        className="icon-button task-delete"
-                        onClick={() =>
-                          setTasks((current) => current.filter((item) => item.id !== task.id))
-                        }
-                        type="button"
-                      >
-                        <Icon name="trash" size={16} />
-                      </button>
+                      <div className="task-actions">
+                        <button
+                          aria-label={`Edit ${task.title}`}
+                          className="icon-button task-edit"
+                          onClick={() =>
+                            task.isCalendarEvent ? editCalendarTask(task) : editTask(task.id)
+                          }
+                          type="button"
+                        >
+                          <Icon name="edit" size={15} />
+                        </button>
+                        {!task.isCalendarEvent && (
+                          <button
+                            aria-label={`Delete ${task.title}`}
+                            className="icon-button task-delete"
+                            onClick={() =>
+                              setTasks((current) => current.filter((item) => item.id !== task.id))
+                            }
+                            type="button"
+                          >
+                            <Icon name="trash" size={16} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))
                 )}
               </div>
-              {!addingTask && (
-                <button
-                  className="add-another-button"
-                  onClick={() => setAddingTask(true)}
-                  type="button"
-                >
-                  <span>
-                    <Icon name="plus" size={15} />
-                  </span>{' '}
-                  Add a task
-                </button>
-              )}
+              <button className="add-another-button" onClick={() => openTaskDialog()} type="button">
+                <span>
+                  <Icon name="plus" size={15} />
+                </span>{' '}
+                Add a task
+              </button>
             </section>
 
             <footer className="dashboard-footer">
@@ -1358,6 +1633,137 @@ function App(): React.JSX.Element {
           </div>
         )}
       </main>
+      {addingTask && (
+        <div
+          className="task-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeTaskDialog()
+          }}
+        >
+          <form
+            aria-labelledby="task-dialog-title"
+            aria-modal="true"
+            className="task-modal"
+            onSubmit={addTask}
+            role="dialog"
+          >
+            <div className="task-modal-heading">
+              <div>
+                <p className="eyebrow">MAKE A PLAN</p>
+                <h2 id="task-dialog-title">
+                  {editingTaskId || editingCalendarTaskId ? 'Edit task' : 'Add a task'}
+                </h2>
+              </div>
+              <button
+                aria-label="Close task dialog"
+                className="task-modal-close"
+                onClick={closeTaskDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="task-modal-field">
+              <span>Task name</span>
+              <input
+                autoFocus
+                required
+                maxLength={160}
+                placeholder="What needs to get done?"
+                value={newTaskTitle}
+                onChange={(event) => setNewTaskTitle(event.target.value)}
+              />
+            </label>
+            <label className="task-modal-field">
+              <span>Description</span>
+              <textarea
+                maxLength={2000}
+                placeholder="Add a few details (optional)"
+                rows={3}
+                value={newTaskDescription}
+                onChange={(event) => setNewTaskDescription(event.target.value)}
+              />
+            </label>
+            <div className="task-modal-options">
+              <label className="task-modal-field">
+                <span>Deadline</span>
+                <div className="task-deadline-controls">
+                  <input
+                    aria-label="Deadline date"
+                    required
+                    type="date"
+                    value={newTaskDue}
+                    onChange={(event) => setNewTaskDue(event.target.value)}
+                  />
+                  <div className="task-time-control">
+                    <span aria-hidden="true" className="task-time-icon" />
+                    <input
+                      aria-label="Deadline time (optional)"
+                      className="task-time-input"
+                      type="time"
+                      value={newTaskDueTime}
+                      onChange={(event) => setNewTaskDueTime(event.target.value)}
+                    />
+                  </div>
+                </div>
+              </label>
+              <label className="task-modal-field">
+                <span>Priority</span>
+                <select
+                  value={newTaskPriority}
+                  onChange={(event) => setNewTaskPriority(event.target.value as Task['priority'])}
+                >
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </label>
+            </div>
+            <label className="task-modal-field">
+              <span>Reminder</span>
+              <select
+                aria-label="Task reminder"
+                value={newTaskReminder}
+                onChange={(event) => setNewTaskReminder(event.target.value as ReminderOffset | '')}
+              >
+                <option value="">No reminder</option>
+                <option value="15m">15 minutes before</option>
+                <option value="1h">1 hour before</option>
+                <option value="1d">1 day before</option>
+                <option value="1w">1 week before</option>
+              </select>
+              <small className="task-reminder-hint">
+                Desktop reminders need MyNotes running in the notification area. Without a time, the
+                deadline is 11:59 PM.
+              </small>
+            </label>
+            <label className="task-modal-field">
+              <span>Tag</span>
+              <input
+                list="existing-task-tags"
+                maxLength={40}
+                placeholder="e.g. Personal, Work"
+                value={newTaskTag}
+                onChange={(event) => setNewTaskTag(event.target.value)}
+              />
+              <datalist id="existing-task-tags">
+                {existingTags.map((tag) => (
+                  <option key={tag.toLowerCase()} value={tag} />
+                ))}
+              </datalist>
+            </label>
+            <div className="task-modal-actions">
+              <button className="task-modal-cancel" onClick={closeTaskDialog} type="button">
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                <Icon name={editingTaskId || editingCalendarTaskId ? 'check' : 'plus'} size={16} />
+                {editingTaskId || editingCalendarTaskId ? 'Save changes' : 'Save task'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }

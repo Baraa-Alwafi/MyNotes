@@ -1,5 +1,6 @@
-import { app, shell, BrowserWindow, ipcMain, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, net, Menu, Notification, Tray } from 'electron'
 import { lookup } from 'node:dns/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -7,6 +8,167 @@ import icon from '../../resources/icon.png?asset'
 
 const maxCalendarBytes = 5 * 1024 * 1024
 const maxCalendarRedirects = 5
+type ReminderOffset = '15m' | '1h' | '1d' | '1w'
+
+const reminderOffsets: Record<ReminderOffset, number> = {
+  '15m': 15 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '1w': 7 * 24 * 60 * 60 * 1000
+}
+
+type TaskReminder = {
+  id: string
+  title: string
+  due: string
+  dueTime?: string
+  reminder?: '15m' | '1h' | '1d' | '1w' | null
+  done: boolean
+}
+
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+let scheduledTasks: TaskReminder[] = []
+let firedReminderKeys = new Set<string>()
+let reminderTimer: NodeJS.Timeout | null = null
+let reminderSweepRunning = false
+
+function isAppFrame(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      return new URL(url).origin === new URL(process.env['ELECTRON_RENDERER_URL']).origin
+    }
+    return new URL(url).protocol === 'file:'
+  } catch {
+    return false
+  }
+}
+
+function isReminderOffset(value: unknown): value is ReminderOffset {
+  return typeof value === 'string' && Object.hasOwn(reminderOffsets, value)
+}
+
+function isValidDueDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+}
+
+function isValidDueTime(value: string): boolean {
+  if (!/^\d{2}:\d{2}$/.test(value)) return false
+  const [hours, minutes] = value.split(':').map(Number)
+  return hours < 24 && minutes < 60
+}
+
+function parseReminderTasks(value: unknown): TaskReminder[] {
+  if (!Array.isArray(value) || value.length > 5000) {
+    throw new Error('Invalid task reminder data.')
+  }
+
+  return value.map((item: unknown) => {
+    if (typeof item !== 'object' || item === null) {
+      throw new Error('Invalid task reminder data.')
+    }
+
+    const record = item as Record<string, unknown>
+    const reminder = record.reminder
+    if (
+      typeof record.id !== 'string' ||
+      typeof record.title !== 'string' ||
+      record.title.length > 500 ||
+      typeof record.due !== 'string' ||
+      !isValidDueDate(record.due) ||
+      (record.dueTime !== undefined &&
+        (typeof record.dueTime !== 'string' || !isValidDueTime(record.dueTime))) ||
+      (reminder !== undefined && reminder !== null && !isReminderOffset(reminder)) ||
+      typeof record.done !== 'boolean'
+    ) {
+      throw new Error('Invalid task reminder data.')
+    }
+
+    return {
+      id: record.id,
+      title: record.title,
+      due: record.due,
+      dueTime: typeof record.dueTime === 'string' ? record.dueTime : undefined,
+      reminder: isReminderOffset(reminder) ? reminder : null,
+      done: record.done
+    }
+  })
+}
+
+function reminderKey(task: TaskReminder): string {
+  return `${task.id}:${task.due}:${task.dueTime ?? ''}:${task.reminder}`
+}
+
+async function persistFiredReminders(): Promise<void> {
+  const statePath = join(app.getPath('userData'), 'fired-task-reminders.json')
+  try {
+    await mkdir(app.getPath('userData'), { recursive: true })
+    await writeFile(statePath, JSON.stringify([...firedReminderKeys]), 'utf8')
+  } catch (error) {
+    console.error('Unable to persist sent task reminders', error)
+  }
+}
+
+async function loadFiredReminders(): Promise<void> {
+  const statePath = join(app.getPath('userData'), 'fired-task-reminders.json')
+  try {
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as unknown
+    if (Array.isArray(stored) && stored.every((key) => typeof key === 'string')) {
+      firedReminderKeys = new Set(stored.slice(-2000))
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Unable to load sent task reminders', error)
+    }
+  }
+}
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+async function checkTaskReminders(): Promise<void> {
+  if (reminderSweepRunning || !Notification.isSupported()) return
+  reminderSweepRunning = true
+  const now = Date.now()
+  let stateChanged = false
+
+  try {
+    for (const task of scheduledTasks) {
+      if (task.done || !task.reminder || firedReminderKeys.has(reminderKey(task))) continue
+      const dueTime = task.dueTime || '23:59'
+      const dueAt = new Date(`${task.due}T${dueTime}:00`).getTime()
+      if (!Number.isFinite(dueAt)) continue
+      const reminderAt = dueAt - reminderOffsets[task.reminder]
+      if (now < reminderAt || now >= dueAt) continue
+
+      const notification = new Notification({
+        title: 'MyNotes task reminder',
+        body: `${task.title} is due${task.dueTime ? ` at ${task.dueTime}` : ' today'}.`
+      })
+      notification.on('click', showMainWindow)
+      notification.show()
+      firedReminderKeys.add(reminderKey(task))
+      stateChanged = true
+    }
+  } catch (error) {
+    console.error('Unable to send a task reminder', error)
+  } finally {
+    reminderSweepRunning = false
+  }
+
+  if (stateChanged) await persistFiredReminders()
+}
 
 function isPublicIpAddress(address: string): boolean {
   const version = isIP(address)
@@ -142,8 +304,7 @@ async function fetchCalendarText(value: string): Promise<string> {
 }
 
 function createWindow(): void {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
@@ -157,7 +318,18 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    mainWindow?.show()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -174,12 +346,33 @@ function createWindow(): void {
   }
 }
 
+function createTray(): void {
+  tray = new Tray(icon)
+  tray.setToolTip('MyNotes')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open MyNotes', click: showMainWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit MyNotes',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  tray.on('click', showMainWindow)
+}
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+app.whenReady().then(async () => {
+  await loadFiredReminders()
+
+  // Set app user model id for Windows
+  electronApp.setAppUserModelId('com.electron.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -192,35 +385,44 @@ app.whenReady().then(() => {
   ipcMain.on('ping', () => console.log('pong'))
   ipcMain.handle('calendar:fetch', async (event, calendarUrl: unknown) => {
     const senderUrl = event.senderFrame?.url
-    if (!senderUrl) throw new Error('Calendar links can only be loaded by the app window.')
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      const expectedOrigin = new URL(process.env['ELECTRON_RENDERER_URL']).origin
-      if (new URL(senderUrl).origin !== expectedOrigin) {
-        throw new Error('Calendar links can only be loaded by the app window.')
-      }
-    } else if (new URL(senderUrl).protocol !== 'file:') {
+    if (!isAppFrame(senderUrl)) {
       throw new Error('Calendar links can only be loaded by the app window.')
     }
     if (typeof calendarUrl !== 'string') throw new Error('Enter a valid calendar link.')
     return fetchCalendarText(calendarUrl)
   })
 
+  ipcMain.on('reminders:sync', (event, rawTasks: unknown) => {
+    if (!isAppFrame(event.senderFrame?.url)) {
+      console.error('Rejected task reminders from an untrusted frame.')
+      return
+    }
+    try {
+      scheduledTasks = parseReminderTasks(rawTasks)
+      void checkTaskReminders()
+    } catch (error) {
+      console.error('Unable to update task reminders', error)
+    }
+  })
+
+  createTray()
   createWindow()
+  reminderTimer = setInterval(() => {
+    void checkTaskReminders()
+  }, 15_000)
 
   app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    showMainWindow()
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+app.on('before-quit', () => {
+  isQuitting = true
+})
+
+app.on('will-quit', () => {
+  if (reminderTimer) clearInterval(reminderTimer)
+  tray?.destroy()
 })
 
 // In this file you can include the rest of your app's specific main process
