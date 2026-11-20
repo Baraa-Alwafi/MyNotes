@@ -13,6 +13,7 @@ declare global {
         done: boolean
       }[]
     ) => void
+    onTaskReminder: (callback: (notice: { title: string; body: string }) => void) => () => void
   }
 
   interface Window {

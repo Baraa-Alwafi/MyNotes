@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+type TaskReminderNotice = {
+  title: string
+  body: string
+}
+
 // Custom APIs for renderer
 const api = {
   fetchCalendar: (url: string): Promise<string> => ipcRenderer.invoke('calendar:fetch', url),
@@ -13,7 +18,13 @@ const api = {
       reminder?: '15m' | '1h' | '1d' | '1w' | null
       done: boolean
     }[]
-  ): void => ipcRenderer.send('reminders:sync', tasks)
+  ): void => ipcRenderer.send('reminders:sync', tasks),
+  onTaskReminder: (callback: (notice: TaskReminderNotice) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, notice: TaskReminderNotice): void =>
+      callback(notice)
+    ipcRenderer.on('reminders:notification', listener)
+    return () => ipcRenderer.removeListener('reminders:notification', listener)
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

@@ -1,0 +1,132 @@
+{
+  "planHash": "a5836111b3fec6b6c16417254baa77d66659bc76b0c28f06307c9445cfcd1489",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-11-20T13:55:36.5878335Z",
+  "retryCount": 3,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 2429,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "typescript-typecheck",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "yarn run v1.22.22\r\nwarning package.json: No license field\r\n$ npm run typecheck:node \u0026\u0026 npm run typecheck:web\r\n\r\n\u003E mynotes@1.0.0 typecheck:node\r\n\u003E tsc --noEmit -p tsconfig.node.json --composite false\r\n\r\n\r\n\u003E mynotes@1.0.0 typecheck:web\r\n\u003E tsc --noEmit -p tsconfig.web.json --composite false\r\n\r\nDone in 3.84s.\r\n",
+        "durationMs": 4045
+      },
+      {
+        "name": "electron-builds",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "yarn run v1.22.22\r\nwarning package.json: No license field\r\n$ npm run typecheck \u0026\u0026 electron-vite build\r\n\r\n\u003E mynotes@1.0.0 typecheck\r\n\u003E npm run typecheck:node \u0026\u0026 npm run typecheck:web\r\n\r\n\r\n\u003E mynotes@1.0.0 typecheck:node\r\n\u003E tsc --noEmit -p tsconfig.node.json --composite false\r\n\r\n\r\n\u003E mynotes@1.0.0 typecheck:web\r\n\u003E tsc --noEmit -p tsconfig.web.json --composite false\r\n\r\n\u001B[36mvite v8.3.8 \u001B[32mbuilding ssr environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 3 modules transformed.\r\nrendering chunks...\r\nout/main/index.js  11.91 kB\r\n\r\n\u001B[32m\u2713 built in 26ms\u001B[39m\r\n\u001B[36mvite v8.3.8 \u001B[32mbuilding ssr environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 2 modules transformed.\r\nrendering chunks...\r\nout/preload/index.js  0.61 kB\r\n\r\n\u001B[32m\u2713 built in 10ms\u001B[39m\r\n\u001B[36mvite v8.3.8 \u001B[32mbuilding client environment for production...\u001B[36m\u001B[39m\r\ntransforming...\r\n\u2713 15 modules transformed.\r\nrendering chunks...\r\nout/renderer/index.html                   0.67 kB\r\nout/renderer/assets/index-CbWZ-zEf.css   42.47 kB\r\nout/renderer/assets/index-BfMZmYz1.js   644.72 kB\r\n\r\n\u001B[32m\u2713 built in 139ms\u001B[39m\r\nDone in 4.54s.\r\n",
+        "durationMs": 4752
+      },
+      {
+        "name": "electron-smoke-headless-exits-zero",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": false,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 1,
+        "outputSample": "yarn run v1.22.22\r\nwarning package.json: No license field\r\n$ D:\\codes\\MyNotes\\MyNotes\\node_modules\\.bin\\electron . --smoke-test\r\nD:\\codes\\MyNotes\\MyNotes\\node_modules\\@electron-toolkit\\utils\\dist\\index.cjs:6\r\n  dev: !electron.app.isPackaged\r\n                     ^\r\n\r\nTypeError: Cannot read properties of undefined (reading \u0027isPackaged\u0027)\r\n    at Object.\u003Canonymous\u003E (D:\\codes\\MyNotes\\MyNotes\\node_modules\\@electron-toolkit\\utils\\dist\\index.cjs:6:22)\r\n    at Module._compile (node:internal/modules/cjs/loader:1937:14)\r\n    at Object..js (node:internal/modules/cjs/loader:2070:10)\r\n    at Module.load (node:internal/modules/cjs/loader:1658:32)\r\n    at Module._load (node:internal/modules/cjs/loader:1450:12)\r\n    at wrapModuleLoad (node:internal/modules/cjs/loader:268:19)\r\n    at Module.require (node:internal/modules/cjs/loader:1681:12)\r\n    at require (node:internal/modules/helpers:157:16)\r\n    at Object.\u003Canonymous\u003E (D:\\codes\\MyNotes\\MyNotes\\out\\main\\index.js:6:31)\r\n    at Module._compile (node:internal/modules/cjs/loader:1937:14)\r\n\r\nNode.js v24.22.2\r\nerror Command failed with exit code 1.\r\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\r\n",
+        "durationMs": 488
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "yarn run v1.22.22\r\nwarning package.json: No license field\r\n$ vitest run\r\n\r\n RUN  v4.1.12 D:/codes/MyNotes/MyNotes\r\n\r\n\r\n Test Files  1 passed (1)\r\n      Tests  2 passed (2)\r\n   Start at  16:55:34\r\n   Duration  2.52s (transform 82ms, setup 0ms, import 428ms, tests 416ms, environment 1.46s)\r\n\r\nDone in 2.99s.\r\n",
+        "durationMs": 3194,
+        "testResults": {
+          "testFramework": "vitest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 2,
+          "testsPassed": 2,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      }
+    ],
+    "executions": [
+      {
+        "source": "setup[0]",
+        "resolvedExecutable": "C:\\Users\\braam\\AppData\\Roaming\\npm\\yarn.CMD",
+        "args": [
+          "install",
+          "--frozen-lockfile"
+        ],
+        "cwd": "D:\\codes\\MyNotes\\MyNotes",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "typescript-typecheck",
+        "resolvedExecutable": "C:\\Users\\braam\\AppData\\Roaming\\npm\\yarn.CMD",
+        "args": [
+          "typecheck"
+        ],
+        "cwd": "D:\\codes\\MyNotes\\MyNotes",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "electron-builds",
+        "resolvedExecutable": "C:\\Users\\braam\\AppData\\Roaming\\npm\\yarn.CMD",
+        "args": [
+          "build"
+        ],
+        "cwd": "D:\\codes\\MyNotes\\MyNotes",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "electron-smoke-headless-exits-zero",
+        "resolvedExecutable": "C:\\Users\\braam\\AppData\\Roaming\\npm\\yarn.CMD",
+        "args": [
+          "electron",
+          ".",
+          "--smoke-test"
+        ],
+        "cwd": "D:\\codes\\MyNotes\\MyNotes",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Users\\braam\\AppData\\Roaming\\npm\\yarn.CMD",
+        "args": [
+          "test"
+        ],
+        "cwd": "D:\\codes\\MyNotes\\MyNotes",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

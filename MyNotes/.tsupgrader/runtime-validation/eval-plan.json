@@ -1,0 +1,51 @@
+{
+  "generatedOnPlatform": "win32",
+  "projectType": "electron",
+  "setup": [
+    {
+      "command": "yarn",
+      "args": ["install", "--frozen-lockfile"]
+    }
+  ],
+  "assertions": [
+    {
+      "name": "typescript-typecheck",
+      "kind": "process",
+      "command": "yarn",
+      "args": ["typecheck"],
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 180
+    },
+    {
+      "name": "electron-builds",
+      "kind": "process",
+      "command": "yarn",
+      "args": ["build"],
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "electron-smoke-headless-exits-zero",
+      "kind": "process",
+      "command": "yarn",
+      "args": ["electron", ".", "--smoke-test"],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": ""
+      },
+      "verificationMethod": "exit-code",
+      "expected": "0",
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "tests-pass",
+      "kind": "process",
+      "command": "yarn",
+      "args": ["test"],
+      "verificationMethod": "test-results",
+      "expected": "0",
+      "timeoutSeconds": 300
+    }
+  ]
+}

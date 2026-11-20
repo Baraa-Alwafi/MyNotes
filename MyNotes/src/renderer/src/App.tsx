@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 
-type View = 'today' | 'upcoming' | 'all' | 'calendar' | 'notes'
+type View = 'today' | 'all' | 'calendar' | 'notes'
+type Theme = 'classic' | 'glass'
 type ReminderOffset = '15m' | '1h' | '1d' | '1w'
 type Task = {
   id: string
@@ -41,6 +42,14 @@ type Note = {
   content: string
   color: string
   updatedAt: string
+  fontSize?: number
+  checklist?: NoteChecklistItem[]
+  linkedTaskId?: string
+}
+type NoteChecklistItem = {
+  id: string
+  text: string
+  done: boolean
 }
 type Recurrence = {
   frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY'
@@ -66,6 +75,8 @@ const noteStorageKey = 'daymark.notes'
 const calendarStorageKey = 'daymark.calendar'
 const calendarTaskDetailsStorageKey = 'daymark.calendar-task-details'
 const calendarUrlStorageKey = 'daymark.calendar-url'
+const themeStorageKey = 'daymark.theme'
+const noteZoomStorageKey = 'daymark.note-zoom'
 const colors = ['#efd395', '#a4a4a4', '#777674', '#4b4a48', '#262625', '#131313']
 const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const weekdayCodes: Record<string, number> = {
@@ -83,6 +94,18 @@ function dateKey(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function isMissedDeadline(
+  task: Pick<DashboardTask, 'due' | 'dueTime' | 'done'>,
+  now = new Date()
+): boolean {
+  if (task.done) return false
+  const today = dateKey(now)
+  if (task.due < today) return true
+  if (task.due !== today || !task.dueTime) return false
+  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  return task.dueTime <= currentTime
 }
 
 function formatTaskTime(value: string): string {
@@ -298,6 +321,23 @@ function readCalendarUrl(): string {
   }
 }
 
+function readTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(themeStorageKey)
+    return stored === 'glass' ? 'glass' : 'classic'
+  } catch (error) {
+    console.error(`Unable to read ${themeStorageKey} from local storage`, error)
+    return 'classic'
+  }
+}
+
+function readNoteZoom(): number {
+  const stored = readStorage<unknown>(noteZoomStorageKey, 100)
+  return typeof stored === 'number' && Number.isFinite(stored)
+    ? Math.min(150, Math.max(80, stored))
+    : 100
+}
+
 function fetchCalendarFeed(url: string): Promise<string> {
   if (typeof window.api?.fetchCalendar !== 'function') {
     throw new Error('Calendar links sync in the MyNotes desktop app, not in the browser preview.')
@@ -311,7 +351,6 @@ function Icon({
 }: {
   name:
     | 'today'
-    | 'upcoming'
     | 'all'
     | 'calendar'
     | 'notes'
@@ -330,12 +369,6 @@ function Icon({
         <rect x="3" y="5" width="18" height="16" rx="2" />
         <path d="M16 3v4M8 3v4M3 10h18" />
         <path d="m9 15 2 2 4-4" />
-      </>
-    ),
-    upcoming: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 7v5l3 2" />
       </>
     ),
     all: (
@@ -403,9 +436,16 @@ function Icon({
 }
 
 function App(): React.JSX.Element {
-  const today = dateKey(new Date())
+  const [now, setNow] = useState(() => new Date())
+  const today = dateKey(now)
   const tomorrow = dateKey(addDays(new Date(`${today}T12:00:00`), 1))
   const [view, setView] = useState<View>('today')
+  const [theme, setTheme] = useState<Theme>(readTheme)
+  const [noteZoom, setNoteZoom] = useState(readNoteZoom)
+  const [taskReminderNotice, setTaskReminderNotice] = useState<{
+    title: string
+    body: string
+  } | null>(null)
   const [tasks, setTasks] = useState<Task[]>(() =>
     readStorage(taskStorageKey, [
       {
@@ -488,6 +528,38 @@ function App(): React.JSX.Element {
     () => new Date(`${today.slice(0, 7)}-01T12:00:00`)
   )
   const [calendarFeedback, setCalendarFeedback] = useState('')
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window.api?.onTaskReminder !== 'function') return
+    return window.api.onTaskReminder(setTaskReminderNotice)
+  }, [])
+
+  useEffect(() => {
+    if (!taskReminderNotice) return
+    const timer = window.setTimeout(() => setTaskReminderNotice(null), 10_000)
+    return () => window.clearTimeout(timer)
+  }, [taskReminderNotice])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(themeStorageKey, theme)
+    } catch (error) {
+      console.error(`Unable to save ${themeStorageKey} to local storage`, error)
+    }
+  }, [theme])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(noteZoomStorageKey, JSON.stringify(noteZoom))
+    } catch (error) {
+      console.error(`Unable to save ${noteZoomStorageKey} to local storage`, error)
+    }
+  }, [noteZoom])
 
   useEffect(() => {
     try {
@@ -626,16 +698,14 @@ function App(): React.JSX.Element {
 
     return [...taskItems, ...calendarTasks]
       .filter((task) => {
-        if (view === 'today' && task.isCalendarEvent && task.due !== today) return false
-        if (view === 'today' && !task.isCalendarEvent && task.due > today) return false
-        if (view === 'upcoming' && task.due <= today) return false
+        if (view === 'today' && task.done && task.due !== today) return false
         if (tagFilter && task.tag.toLowerCase() !== tagFilter.toLowerCase()) return false
         if (!normalizedQuery) return true
         return `${task.title} ${task.description} ${task.tag}`
           .toLowerCase()
           .includes(normalizedQuery)
       })
-      .sort((a, b) => Number(a.done) - Number(b.done) || a.due.localeCompare(b.due))
+      .sort((a, b) => a.due.localeCompare(b.due) || Number(a.done) - Number(b.done))
   }, [calendarTasks, query, tagFilter, tasks, today, view])
 
   useEffect(() => {
@@ -657,6 +727,11 @@ function App(): React.JSX.Element {
     `${note.title} ${note.content}`.toLowerCase().includes(normalizedNoteQuery)
   )
   const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? null
+  const linkedNoteTask = tasks.find((task) => task.id === selectedNote?.linkedTaskId) ?? null
+  const noteFontSize =
+    typeof selectedNote?.fontSize === 'number'
+      ? Math.min(32, Math.max(12, selectedNote.fontSize))
+      : 16
   const calendarDays = useMemo(() => {
     const firstOfMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1, 12)
     const firstVisibleDay = addDays(firstOfMonth, -firstOfMonth.getDay())
@@ -686,14 +761,12 @@ function App(): React.JSX.Element {
   }).format(new Date(`${selectedDate}T12:00:00`))
   const title =
     view === 'today'
-      ? 'Today'
-      : view === 'upcoming'
-        ? 'Upcoming'
-        : view === 'all'
-          ? 'All tasks'
-          : view === 'calendar'
-            ? 'Calendar'
-            : 'Your notes'
+      ? 'Today & upcoming'
+      : view === 'all'
+        ? 'All tasks'
+        : view === 'calendar'
+          ? 'Calendar'
+          : 'Your notes'
   const dateLabel = new Intl.DateTimeFormat('en', {
     weekday: 'long',
     month: 'long',
@@ -909,21 +982,82 @@ function App(): React.JSX.Element {
     )
   }
 
+  function updateNoteDetails(
+    update: Partial<Pick<Note, 'fontSize' | 'checklist' | 'linkedTaskId'>>
+  ): void {
+    if (!selectedNote) return
+    setNotes((current) =>
+      current.map((note) =>
+        note.id === selectedNote.id
+          ? { ...note, ...update, updatedAt: new Date().toISOString() }
+          : note
+      )
+    )
+  }
+
+  function addChecklistItem(): void {
+    if (!selectedNote) return
+    updateNoteDetails({
+      checklist: [
+        ...(selectedNote.checklist ?? []),
+        { id: crypto.randomUUID(), text: '', done: false }
+      ]
+    })
+  }
+
+  function updateChecklistItem(id: string, update: Partial<NoteChecklistItem>): void {
+    if (!selectedNote) return
+    updateNoteDetails({
+      checklist: (selectedNote.checklist ?? []).map((item) =>
+        item.id === id ? { ...item, ...update } : item
+      )
+    })
+  }
+
+  function deleteChecklistItem(id: string): void {
+    if (!selectedNote) return
+    updateNoteDetails({
+      checklist: (selectedNote.checklist ?? []).filter((item) => item.id !== id)
+    })
+  }
+
   const navItems: {
     id: View
     label: string
-    icon: 'today' | 'upcoming' | 'all' | 'calendar' | 'notes'
+    icon: 'today' | 'all' | 'calendar' | 'notes'
     count?: number
   }[] = [
-    { id: 'today', label: 'Today', icon: 'today' },
-    { id: 'upcoming', label: 'Upcoming', icon: 'upcoming' },
+    { id: 'today', label: 'Today & upcoming', icon: 'today' },
     { id: 'all', label: 'All tasks', icon: 'all', count: openCount },
     { id: 'calendar', label: 'Calendar', icon: 'calendar', count: calendarEvents.length },
     { id: 'notes', label: 'Notes', icon: 'notes', count: notes.length }
   ]
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={theme}>
+      {taskReminderNotice && (
+        <div className="task-reminder-toast" role="status" aria-live="polite">
+          <div>
+            <strong>{taskReminderNotice.title}</strong>
+            <p>{taskReminderNotice.body}</p>
+          </div>
+          <button
+            aria-label="Dismiss reminder"
+            onClick={() => setTaskReminderNotice(null)}
+            type="button"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      <header className="window-titlebar">
+        <div className="window-title">
+          <span className="window-title-icon">
+            <Icon name="spark" size={13} />
+          </span>
+          <span>MyNotes</span>
+        </div>
+      </header>
       <aside className="sidebar">
         <button
           className="brand"
@@ -968,6 +1102,19 @@ function App(): React.JSX.Element {
             <strong>{title}</strong>
           </div>
           <div className="topbar-actions">
+            <label className="theme-picker">
+              <span>Theme</span>
+              <select
+                aria-label="Choose theme"
+                value={theme}
+                onChange={(event) =>
+                  setTheme(event.currentTarget.value === 'glass' ? 'glass' : 'classic')
+                }
+              >
+                <option value="classic">Classic</option>
+                <option value="glass">Glass</option>
+              </select>
+            </label>
             <label className="search-box">
               <Icon name="search" size={17} />
               <input
@@ -1322,13 +1469,128 @@ function App(): React.JSX.Element {
                     onChange={(event) => updateNote('title', event.target.value)}
                     placeholder="Untitled note"
                   />
-                  <textarea
-                    className="note-content-input"
-                    aria-label="Note content"
-                    value={selectedNote.content}
-                    onChange={(event) => updateNote('content', event.target.value)}
-                    placeholder="Start writing your thoughts..."
-                  />
+                  <div className="editor-toolbar">
+                    <div className="editor-tool-group" role="group" aria-label="Text size">
+                      <span>Text</span>
+                      <button
+                        aria-label="Decrease text size"
+                        className="editor-tool-button"
+                        disabled={noteFontSize <= 12}
+                        onClick={() => updateNoteDetails({ fontSize: noteFontSize - 2 })}
+                        type="button"
+                      >
+                        A−
+                      </button>
+                      <span className="editor-tool-value">{noteFontSize}px</span>
+                      <button
+                        aria-label="Increase text size"
+                        className="editor-tool-button"
+                        disabled={noteFontSize >= 32}
+                        onClick={() => updateNoteDetails({ fontSize: noteFontSize + 2 })}
+                        type="button"
+                      >
+                        A+
+                      </button>
+                    </div>
+                    <div className="editor-tool-group" role="group" aria-label="Writing zoom">
+                      <span>Zoom</span>
+                      <button
+                        aria-label="Zoom out"
+                        className="editor-tool-button"
+                        disabled={noteZoom <= 80}
+                        onClick={() => setNoteZoom((current) => Math.max(80, current - 10))}
+                        type="button"
+                      >
+                        −
+                      </button>
+                      <span className="editor-tool-value">{noteZoom}%</span>
+                      <button
+                        aria-label="Zoom in"
+                        className="editor-tool-button"
+                        disabled={noteZoom >= 150}
+                        onClick={() => setNoteZoom((current) => Math.min(150, current + 10))}
+                        type="button"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <label className="note-task-link">
+                      <span>Linked task</span>
+                      <select
+                        aria-label="Link this note to a task"
+                        onChange={(event) =>
+                          updateNoteDetails({
+                            linkedTaskId: event.currentTarget.value || undefined
+                          })
+                        }
+                        value={selectedNote.linkedTaskId ?? ''}
+                      >
+                        <option value="">None</option>
+                        {selectedNote.linkedTaskId && !linkedNoteTask && (
+                          <option value={selectedNote.linkedTaskId}>Task no longer exists</option>
+                        )}
+                        {tasks.map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {task.done ? '✓ ' : ''}
+                            {task.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="note-writing-area" style={{ zoom: noteZoom / 100 }}>
+                    <textarea
+                      className="note-content-input"
+                      aria-label="Note content"
+                      style={{ fontSize: noteFontSize }}
+                      value={selectedNote.content}
+                      onChange={(event) => updateNote('content', event.target.value)}
+                      placeholder="Start writing your thoughts..."
+                    />
+                    <section className="note-checklist" aria-label="Note to-do list">
+                      <div className="note-checklist-heading">
+                        <span>TO-DO LIST</span>
+                        <button
+                          className="editor-action-button"
+                          onClick={addChecklistItem}
+                          type="button"
+                        >
+                          <Icon name="plus" size={14} /> Add item
+                        </button>
+                      </div>
+                      {(selectedNote.checklist ?? []).map((item, index) => (
+                        <div
+                          className={`note-checklist-row ${item.done ? 'is-done' : ''}`}
+                          key={item.id}
+                        >
+                          <input
+                            aria-label={`Mark checklist item ${index + 1} as complete`}
+                            checked={item.done}
+                            onChange={(event) =>
+                              updateChecklistItem(item.id, { done: event.currentTarget.checked })
+                            }
+                            type="checkbox"
+                          />
+                          <input
+                            aria-label={`Checklist item ${index + 1}`}
+                            onChange={(event) =>
+                              updateChecklistItem(item.id, { text: event.currentTarget.value })
+                            }
+                            placeholder="Write a to-do item..."
+                            value={item.text}
+                          />
+                          <button
+                            aria-label={`Delete checklist item ${index + 1}`}
+                            className="icon-button"
+                            onClick={() => deleteChecklistItem(item.id)}
+                            type="button"
+                          >
+                            <Icon name="trash" size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </section>
+                  </div>
                   <div className="editor-footer">
                     <span>Created for your eyes only</span>
                     <span>
@@ -1364,15 +1626,13 @@ function App(): React.JSX.Element {
                   {view === 'today' ? dateLabel.toUpperCase() : 'KEEP YOUR MOMENTUM'}
                 </p>
                 <h1>
-                  {view === 'today' ? 'Today' : view === 'upcoming' ? 'Coming up' : 'All tasks'}
+                  {view === 'today' ? 'Today & upcoming' : 'All tasks'}
                   <span className="title-dot">.</span>
                 </h1>
                 <p className="section-subtitle">
                   {view === 'today'
-                    ? 'A fresh day to make meaningful progress.'
-                    : view === 'upcoming'
-                      ? 'See what’s on the horizon and plan ahead.'
-                      : 'Everything you need to get across the finish line.'}
+                    ? 'Your tasks for today and what’s coming next.'
+                    : 'Everything you need to get across the finish line.'}
                 </p>
               </div>
               <button className="primary-button" onClick={() => openTaskDialog()} type="button">
@@ -1418,13 +1678,7 @@ function App(): React.JSX.Element {
             <section className="task-section">
               <div className="task-section-heading">
                 <div>
-                  <h2>
-                    {view === 'today'
-                      ? 'Your tasks'
-                      : view === 'upcoming'
-                        ? 'Coming up next'
-                        : 'All your tasks'}
-                  </h2>
+                  <h2>{view === 'today' ? 'Your tasks' : 'All your tasks'}</h2>
                   <p>{visibleTasks.filter((task) => !task.done).length} left to do</p>
                 </div>
                 <div className="task-section-filters">
@@ -1455,7 +1709,7 @@ function App(): React.JSX.Element {
                   ) : null}
                   <div className="task-filter">
                     <span className="filter-dot" />
-                    {view === 'today' ? 'Today' : view === 'upcoming' ? 'Upcoming' : 'All tasks'}
+                    {view === 'today' ? 'Today & upcoming' : 'All tasks'}
                   </div>
                 </div>
               </div>
@@ -1482,133 +1736,145 @@ function App(): React.JSX.Element {
                     </span>
                   </div>
                 ) : (
-                  visibleTasks.map((task) => (
-                    <div
-                      className={`task-row ${task.done ? 'is-done' : ''} ${task.isCalendarEvent ? 'calendar-task-row' : ''}`}
-                      data-priority={task.priority?.toLowerCase()}
-                      key={task.id}
-                    >
-                      <button
-                        aria-label={
-                          task.done ? `Mark ${task.title} as not done` : `Complete ${task.title}`
-                        }
-                        className={`task-check ${task.done ? 'checked' : ''}`}
-                        onClick={() =>
-                          task.isCalendarEvent
-                            ? updateCalendarTask(task.id, { done: !task.done })
-                            : setTasks((current) =>
-                                current.map((item) =>
-                                  item.id === task.id ? { ...item, done: !item.done } : item
-                                )
-                              )
-                        }
-                        type="button"
-                      >
-                        {task.done && <Icon name="check" size={13} />}
-                      </button>
-                      <div className="task-main">
-                        <span className="task-title">{task.title}</span>
-                        <span className="task-meta">
-                          {task.priority && (
-                            <span className={`priority-dot ${task.priority.toLowerCase()}`} />
-                          )}
-                          <button
-                            className={`task-tag ${tagFilter === task.tag ? 'selected' : ''}`}
-                            onClick={() =>
-                              setTagFilter((current) => (current === task.tag ? null : task.tag))
-                            }
-                            type="button"
-                          >
-                            {task.tag}
-                          </button>
-                          {task.priority && (
-                            <span
-                              className={`priority-label priority-${task.priority.toLowerCase()}`}
-                            >
-                              {task.priority}
-                            </span>
-                          )}
-                          {task.isCalendarEvent && <span>Calendar event</span>}
-                        </span>
-                        {task.description && (
-                          <span className="task-description">{task.description}</span>
-                        )}
-                        {task.isCalendarEvent ? (
-                          <details className="calendar-task-description-editor">
-                            <summary>
-                              {task.description ? 'Edit description' : 'Add description'}
-                            </summary>
-                            <textarea
-                              aria-label={`Description for ${task.title}`}
-                              maxLength={2000}
-                              onChange={(event) =>
-                                updateCalendarTask(task.id, { description: event.target.value })
-                              }
-                              placeholder="Add a description for this UQU event"
-                              value={task.description}
-                            />
-                          </details>
-                        ) : (
-                          <details className="calendar-task-description-editor">
-                            <summary>
-                              {task.description ? 'Edit description' : 'Add description'}
-                            </summary>
-                            <textarea
-                              aria-label={`Description for ${task.title}`}
-                              maxLength={2000}
-                              onChange={(event) =>
-                                updateTaskDescription(task.id, event.target.value)
-                              }
-                              placeholder="Add a description for this task"
-                              value={task.description}
-                            />
-                          </details>
-                        )}
-                      </div>
-                      <span className="task-due">
-                        <span>
-                          {view === 'upcoming'
-                            ? (() => {
-                                const daysLeft = dateDifference(today, task.due)
-                                return `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
-                              })()
-                            : task.due === today
-                              ? 'Today'
-                              : task.due === tomorrow
-                                ? 'Tomorrow'
-                                : new Intl.DateTimeFormat('en', {
-                                    month: 'short',
-                                    day: 'numeric'
-                                  }).format(new Date(`${task.due}T12:00:00`))}
-                        </span>
-                        {task.dueTime && <small>{formatTaskTime(task.dueTime)}</small>}
-                      </span>
-                      <div className="task-actions">
-                        <button
-                          aria-label={`Edit ${task.title}`}
-                          className="icon-button task-edit"
-                          onClick={() =>
-                            task.isCalendarEvent ? editCalendarTask(task) : editTask(task.id)
-                          }
-                          type="button"
+                  visibleTasks.map((task, index) => {
+                    const missed = isMissedDeadline(task, now)
+                    const showUpcomingDivider =
+                      view === 'today' &&
+                      task.due > today &&
+                      (index === 0 || visibleTasks[index - 1].due <= today)
+
+                    return (
+                      <Fragment key={task.id}>
+                        {showUpcomingDivider && <div className="task-list-divider">Coming up</div>}
+                        <div
+                          className={`task-row ${task.done ? 'is-done' : ''} ${task.isCalendarEvent ? 'calendar-task-row' : ''} ${missed ? 'is-missed' : ''}`}
+                          data-priority={task.priority?.toLowerCase()}
                         >
-                          <Icon name="edit" size={15} />
-                        </button>
-                        {!task.isCalendarEvent && (
                           <button
-                            aria-label={`Delete ${task.title}`}
-                            className="icon-button task-delete"
+                            aria-label={
+                              task.done
+                                ? `Mark ${task.title} as not done`
+                                : `Complete ${task.title}`
+                            }
+                            className={`task-check ${task.done ? 'checked' : ''}`}
                             onClick={() =>
-                              setTasks((current) => current.filter((item) => item.id !== task.id))
+                              task.isCalendarEvent
+                                ? updateCalendarTask(task.id, { done: !task.done })
+                                : setTasks((current) =>
+                                    current.map((item) =>
+                                      item.id === task.id ? { ...item, done: !item.done } : item
+                                    )
+                                  )
                             }
                             type="button"
                           >
-                            <Icon name="trash" size={16} />
+                            {task.done && <Icon name="check" size={13} />}
                           </button>
-                        )}
-                      </div>
-                    </div>
-                  ))
+                          <div className="task-main">
+                            <span className="task-title">{task.title}</span>
+                            <span className="task-meta">
+                              {task.priority && (
+                                <span className={`priority-dot ${task.priority.toLowerCase()}`} />
+                              )}
+                              <button
+                                className={`task-tag ${tagFilter === task.tag ? 'selected' : ''}`}
+                                onClick={() =>
+                                  setTagFilter((current) =>
+                                    current === task.tag ? null : task.tag
+                                  )
+                                }
+                                type="button"
+                              >
+                                {task.tag}
+                              </button>
+                              {task.priority && (
+                                <span
+                                  className={`priority-label priority-${task.priority.toLowerCase()}`}
+                                >
+                                  {task.priority}
+                                </span>
+                              )}
+                              {task.isCalendarEvent && <span>Calendar event</span>}
+                            </span>
+                            {task.description && (
+                              <span className="task-description">{task.description}</span>
+                            )}
+                            {task.isCalendarEvent ? (
+                              <details className="calendar-task-description-editor">
+                                <summary>
+                                  {task.description ? 'Edit description' : 'Add description'}
+                                </summary>
+                                <textarea
+                                  aria-label={`Description for ${task.title}`}
+                                  maxLength={2000}
+                                  onChange={(event) =>
+                                    updateCalendarTask(task.id, { description: event.target.value })
+                                  }
+                                  placeholder="Add a description for this UQU event"
+                                  value={task.description}
+                                />
+                              </details>
+                            ) : (
+                              <details className="calendar-task-description-editor">
+                                <summary>
+                                  {task.description ? 'Edit description' : 'Add description'}
+                                </summary>
+                                <textarea
+                                  aria-label={`Description for ${task.title}`}
+                                  maxLength={2000}
+                                  onChange={(event) =>
+                                    updateTaskDescription(task.id, event.target.value)
+                                  }
+                                  placeholder="Add a description for this task"
+                                  value={task.description}
+                                />
+                              </details>
+                            )}
+                          </div>
+                          <span className="task-due">
+                            {missed && <span className="missed-badge">Missed</span>}
+                            <span>
+                              {task.due === today
+                                ? 'Today'
+                                : task.due === tomorrow
+                                  ? 'Tomorrow'
+                                  : new Intl.DateTimeFormat('en', {
+                                      month: 'short',
+                                      day: 'numeric'
+                                    }).format(new Date(`${task.due}T12:00:00`))}
+                            </span>
+                            {task.dueTime && <small>{formatTaskTime(task.dueTime)}</small>}
+                          </span>
+                          <div className="task-actions">
+                            <button
+                              aria-label={`Edit ${task.title}`}
+                              className="icon-button task-edit"
+                              onClick={() =>
+                                task.isCalendarEvent ? editCalendarTask(task) : editTask(task.id)
+                              }
+                              type="button"
+                            >
+                              <Icon name="edit" size={15} />
+                            </button>
+                            {!task.isCalendarEvent && (
+                              <button
+                                aria-label={`Delete ${task.title}`}
+                                className="icon-button task-delete"
+                                onClick={() =>
+                                  setTasks((current) =>
+                                    current.filter((item) => item.id !== task.id)
+                                  )
+                                }
+                                type="button"
+                              >
+                                <Icon name="trash" size={16} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </Fragment>
+                    )
+                  })
                 )}
               </div>
               <button className="add-another-button" onClick={() => openTaskDialog()} type="button">

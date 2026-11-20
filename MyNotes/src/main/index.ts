@@ -25,6 +25,10 @@ type TaskReminder = {
   reminder?: '15m' | '1h' | '1d' | '1w' | null
   done: boolean
 }
+type TaskReminderNotice = {
+  title: string
+  body: string
+}
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -137,8 +141,71 @@ function showMainWindow(): void {
   mainWindow.focus()
 }
 
+function showFallbackTaskReminder(notice: TaskReminderNotice): void {
+  if (process.platform === 'win32' && tray && !tray.isDestroyed()) {
+    try {
+      tray.displayBalloon({
+        title: notice.title,
+        content: notice.body,
+        icon,
+        iconType: 'custom'
+      })
+      return
+    } catch (error) {
+      console.error('Unable to display a reminder in the notification area', error)
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('reminders:notification', notice)
+      if (!mainWindow.isVisible()) showMainWindow()
+      return
+    } catch (error) {
+      console.error('Unable to display a reminder in MyNotes', error)
+    }
+  }
+
+  console.error('No available notification surface for a task reminder.')
+}
+
+function showTaskReminder(task: TaskReminder): void {
+  const notice = {
+    title: 'MyNotes task reminder',
+    body: `${task.title} is due${task.dueTime ? ` at ${task.dueTime}` : ' today'}.`
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+    try {
+      mainWindow.webContents.send('reminders:notification', notice)
+      return
+    } catch (error) {
+      console.error('Unable to display a reminder in MyNotes', error)
+    }
+  }
+
+  if (!Notification.isSupported()) {
+    console.error('Native notifications are not supported; using the notification-area fallback.')
+    showFallbackTaskReminder(notice)
+    return
+  }
+
+  try {
+    const notification = new Notification({ ...notice, icon })
+    notification.on('click', showMainWindow)
+    notification.once('failed', (_event, error) => {
+      console.error('Unable to show a native task reminder', error)
+      showFallbackTaskReminder(notice)
+    })
+    notification.show()
+  } catch (error) {
+    console.error('Unable to create a native task reminder', error)
+    showFallbackTaskReminder(notice)
+  }
+}
+
 async function checkTaskReminders(): Promise<void> {
-  if (reminderSweepRunning || !Notification.isSupported()) return
+  if (reminderSweepRunning) return
   reminderSweepRunning = true
   const now = Date.now()
   let stateChanged = false
@@ -152,17 +219,14 @@ async function checkTaskReminders(): Promise<void> {
       const reminderAt = dueAt - reminderOffsets[task.reminder]
       if (now < reminderAt || now >= dueAt) continue
 
-      const notification = new Notification({
-        title: 'MyNotes task reminder',
-        body: `${task.title} is due${task.dueTime ? ` at ${task.dueTime}` : ' today'}.`
-      })
-      notification.on('click', showMainWindow)
-      notification.show()
-      firedReminderKeys.add(reminderKey(task))
-      stateChanged = true
+      try {
+        showTaskReminder(task)
+        firedReminderKeys.add(reminderKey(task))
+        stateChanged = true
+      } catch (error) {
+        console.error(`Unable to send a reminder for task ${task.id}`, error)
+      }
     }
-  } catch (error) {
-    console.error('Unable to send a task reminder', error)
   } finally {
     reminderSweepRunning = false
   }
@@ -307,7 +371,23 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
+    minWidth: 700,
+    minHeight: 520,
     show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: true,
+    titleBarStyle: 'hidden',
+    ...(process.platform !== 'darwin'
+      ? {
+          titleBarOverlay: {
+            color: '#1313138c',
+            symbolColor: '#efd395',
+            height: 30
+          }
+        }
+      : {}),
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
@@ -318,6 +398,10 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    if (process.argv.includes('--smoke-test')) {
+      app.quit()
+      return
+    }
     mainWindow?.show()
   })
 
